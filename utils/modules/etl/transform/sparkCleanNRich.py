@@ -23,6 +23,8 @@ try:
     from pyspark.sql.window import Window
     from pyspark.ml.feature import Imputer
     from pyspark.sql import DataFrame
+    from pyspark.sql.types import DoubleType
+    from pyspark.ml.feature import MinMaxScaler, StandardScaler, VectorAssembler
 
     print("All functional %s-libraries in %s-package of %s-module imported successfully!"
           % (__name__.upper(),__package__.upper(),__module__.upper()))
@@ -88,7 +90,7 @@ class Transformer():
 #         self._data = None
         
 
-        __s_fn_id__ = "__init__"
+        __s_fn_id__ = f"{self.__name__} __init__"
 
         ''' initiate to load app.cfg data '''
         global logger
@@ -154,7 +156,7 @@ class Transformer():
     '''
     @staticmethod
     def impute_data(
-        data,
+        data:DataFrame=None,
         column_subset:list=[],
         strategy:str="mean",
         **kwargs
@@ -171,29 +173,44 @@ class Transformer():
             **kwargs
         """
 
-        __s_fn_id__ = "function <impute_data>"
-        _data = None
+        __s_fn_id__ = f"{Transformer.__name__} @staticmethod <impute_data>"
+
+        imputed_data_ = None
 
         try:
             ''' set and validate data '''
             if not isinstance(data,DataFrame):
                 raise AttributeError("Invalid data; must be a valid pyspark dataframe")
+            ''' by default get all numeric columns '''
+            num_col_list = [col_ for col_ in data.columns if data.select(col_).dtypes[0][1] 
+                             not in ['string','date','timestamp','boolean']]
             ''' validate column_subset, if none imupte all numeric columns '''
-            if len(column_subset) > 0:
-                non_num_cols = len([col_ for col_ in column_subset if
-                                    data.select(col_).dtypes[0][1] !="string"])
-                if non_num_cols < len(column_subset):
-                    raise AttributeError("%d invalid non-numeric columns in input attr: column_subset"
-                                         % len(column_subset)-non_num_cols)
-                logger.debug("%s validated %d numeric columns listed in attr: column_subset",
-                             __s_fn_id__,len(column_subset))
-            elif column_subset is None or column_subset==[]:
-                column_subset = [col_ for col_ in data.columns if
-                                 data.select(col_).dtypes[0][1] not in ['string','timestamp','boolean']]
-                logger.debug("%s extracted %d numeric columns for imputing",
-                             __s_fn_id__,len(column_subset))
+            if column_subset is not None and len(column_subset) > 0:
+#                 _num_col_count = len([col_ for col_ in column_subset if
+#                                     data.select(F.col(col_)).dtypes[0][1]
+#                                     not in ['string','date','timestamp','boolean']])
+                num_col_list = list(set(column_subset).intersection(set(num_col_list)))
+                if len(num_col_list)>0:
+                    logger.debug("%s validated %d common numeric columns listed in attr: column_subset",
+                                 __s_fn_id__,len(num_col_list))
+                else:
+                    raise AttributeError("Invalid column_subset list; must be numeric dtype columns")
             else:
-                raise RuntimeError("Something was wrong validating column_subset")
+                logger.warning("Undefined column_subset, defaulting to all %d numeric columns",
+                               len(num_col_list))
+#                 if _num_col_count < len(column_subset):
+#                     raise AttributeError("%d invalid non-numeric columns in input attr: column_subset"
+#                                          % len(column_subset)-_num_col_count)
+#                 logger.debug("%s validated %d numeric columns listed in attr: column_subset",
+#                              __s_fn_id__,len(column_subset))
+#             elif column_subset is None or column_subset==[]:
+#                 column_subset = [col_ for col_ in data.columns if
+#                                  data.select(col_).dtypes[0][1] not in ['string','timestamp','boolean']]
+#             else:
+#                 logger.debug("%s extracted %d numeric columns for imputing",
+#                              __s_fn_id__,len(column_subset))
+#             else:
+#                 raise RuntimeError("Something was wrong validating column_subset")
 
             ''' validate strategy '''
             _strategy = strategy.lower()
@@ -205,17 +222,17 @@ class Transformer():
             imputer = Imputer(inputCols=column_subset,
                               outputCols=[col_ for col_ in column_subset]
                              ).setStrategy(_strategy)
-            _data = imputer.fit(data).transform(data)
-            if not _data or _data.count() <= 0:
+            imputed_data_ = imputer.fit(data).transform(data)
+            if not imputed_data_ or imputed_data_.count() <= 0:
                 raise RuntimeError("Imputer returned an empty dataset")
-            logger.debug("IMputer succeded with returning %d rows", _data.count())
+            logger.debug("IMputer succeded with returning %d rows", imputed_data_.count())
 
         except Exception as err:
             logger.error("%s %s \n",__s_fn_id__, err)
             print("[Error]"+__s_fn_id__, err)
             print(traceback.format_exc())
 
-        return _data
+        return imputed_data_
 
     ''' Function --- COUNT COLUMN NULLS ---
 
@@ -229,7 +246,7 @@ class Transformer():
         **kwargs,
     ) -> DataFrame:
 
-        __s_fn_id__ = "function <count_column_nulls>"
+        __s_fn_id__ = f"{Transformer.__name__} @staticmethod <count_column_nulls>"
         _nan_counts_sdf = None
 
         try:
@@ -280,7 +297,7 @@ class Transformer():
         Returns:
             _piv_data (DataFrame)
         """
-        __s_fn_id__ = "function <pivot_data>"
+        __s_fn_id__ = f"{Transformer.__name__} @staticmethod <pivot_data>"
         _piv_data = None
 
         try:
@@ -307,7 +324,8 @@ class Transformer():
                                 set(kwargs['PIVCOLUMNS'])
                                 -(set(kwargs['PIVCOLUMNS'])-set(_piv_col_names)))
             if len(_piv_col_names)<=0:
-                raise AttributeError("No matching pivot column names in kwargs['PIVCOLUMNS'] list")
+                raise AttributeError("No matching pivot column names in kwargs 'PIVCOLUMNS' list %s"
+                                     % kwargs['PIVCOLUMNS'])
             logger.debug("Pivoting %d valid columns",len(_piv_col_names))
             _agg = 'sum'
             if "AGGREGATE" in kwargs.keys() and kwargs['AGGREGATE'] in aggList_:
@@ -316,7 +334,7 @@ class Transformer():
             logger.debug("Transposing %d rows groupby %s to pivot with "+\
                          "distinct values in %s and %s aggregation on column(s): %s"
                          ,data.count(),str(group_columns).upper()
-                         ,str(pivot_column).upper(),_agg.upper(),str(agg_column))
+                         ,str(pivot_column).upper(),_agg.upper(),str(agg_column).upper())
             if _agg == 'sum':
                 _piv_data = data.groupBy(group_columns)\
                         .pivot(pivot_column, _piv_col_names)\
@@ -394,7 +412,7 @@ class Transformer():
         Returns:
             _unpiv_data (DataFrame)
         """
-        __s_fn_id__ = "function <unpivot_table>"
+        __s_fn_id__ = f"{Transformer.__name__} @staticmethod <unpivot_table>"
         _unpiv_data = None
         where_expr = None
         _l_unpiv_cols = []
@@ -510,6 +528,8 @@ class Transformer():
         Returns:
         """
 
+        __s_fn_id__ = f"{Transformer.__name__} @staticmethod <drop_duplicates>"
+
         try:
             ''' drop duplicates 
                 TODO - move to a @staticmethod '''
@@ -529,3 +549,94 @@ class Transformer():
             print(traceback.format_exc())
 
         return _unique_sdf
+
+
+    ''' Function --- SCALE COLUMN DATA ---
+
+        authors: <samana.thetha@gmail.com>
+    '''
+    @staticmethod
+    def scale(
+        data:DataFrame=None,  # mix of numeric and categorical data
+        col_list:list=None,   # list of columns; must be numeric data columns
+        col_prefix:str="scaled",
+        scale_method="MINMAX",
+    ) -> DataFrame:
+        """
+        Description:
+            Apply the pyspark ML feature Scaler methods: MinMax and Standard scalers
+        Attributes:
+            data (DataFrame)- mix of numeric and none-numeric columns
+            col_list (list) - column names to consider applying the scaler method
+            col_prefix (str)- string to concaternate to the column name to identify the new colum
+            scale_method(str)-eithe MinMaxScaler or StandardScaler methods
+        Returns:
+            data (DataFrame) - augment additional columns to dataframe with scaler data
+        Exceptions:
+            * data must be a pyspark DataFrame or compatible dtype that can be converted
+            * if col_list is empty will default to all numeric columns
+            * eliminate all non-numeric columns defined in col_list
+            * if col_prefix is undefined; default to 'scaled'
+        """
+
+        __s_fn_id__ = f"{Transformer.__name__} @staticmethod <scale>"
+
+        try:
+            ''' vaidate and set data property '''
+            if not isinstance(data,DataFrame):
+                raise AttributeError("Invalid dataframe must be pyspark dataframe")
+
+            _num_cols = [x[0] for x in data.dtypes if x[1] not in ['string','date','timestamp']]
+            if col_list is None or len(col_list)==0:
+                _cols = _num_cols
+                logger.warning("%s No columns defined; defaulting to all numeric columns; %s",
+                               __s_fn_id__,_cols)
+            else:
+                _cols = list(set(col_list).intersection(set(_num_cols)))
+                logger.debug("%s Working with valid numeric columns %s",__s_fn_id__,_cols)
+            if len(_cols) <= 0:
+                raise AttributeError("Invalid set of columns defined: %s must be numeric columns: %s"
+                                     % (col_list,_num_cols))
+
+            if "".join(col_prefix.split())=="":
+                col_prefix='scaled'
+
+            _scaled_cols = []
+            unlist = F.udf(lambda x: round(float(list(x)[0]),4), DoubleType())
+            
+            if scale_method.upper() in ['MINMAX']:
+                for scal_col in _cols:
+                    _feat_col="_".join(['feat',scal_col])
+                    assembler = VectorAssembler(inputCols=[scal_col], outputCol=_feat_col)
+                    assembled = assembler.transform(data)
+                    
+                    _scal_col_name = "_".join([col_prefix,scal_col])
+                    scaler = MinMaxScaler(inputCol=_feat_col,outputCol=_scal_col_name).fit(assembled)
+                    data=scaler.transform(assembled)\
+                                .withColumn(_scal_col_name,unlist(_scal_col_name))\
+                                .drop(_feat_col)
+
+            elif scale_method.upper() in ['STANDARD']:
+                for scal_col in _cols:
+                    _feat_col="_".join(['feat',scal_col])
+                    assembler = VectorAssembler(inputCols=[scal_col], outputCol=_feat_col)
+                    assembled = assembler.transform(data)
+                    
+                    _scal_col_name = "_".join([col_prefix,scal_col])
+                    scaler = StandardScaler(inputCol=_feat_col,outputCol=_scal_col_name,
+                                          withStd=True, withMean=False).fit(assembled)
+                    data=scaler.transform(assembled)\
+                                .withColumn(_scal_col_name,unlist(_scal_col_name))\
+                                .drop(_feat_col)
+
+            else:
+                raise AttributeError("Unrecognized standardization type must be MINMAX or STANDARD")
+
+
+        except Exception as err:
+            logger.error("%s %s \n",__s_fn_id__, err)
+            print("[Error]"+__s_fn_id__, err)
+            print(traceback.format_exc())
+
+        return data
+
